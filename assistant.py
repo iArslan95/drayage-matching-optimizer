@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import time
 
 import requests
 
@@ -159,6 +161,38 @@ def suggested_questions(k_opt, k_base):
     ]
 
 
+def _post_with_retry(api_key, payload):
+    """POST to Groq, retrying on free-tier 429s (the response says how long
+    to wait) and transient 5xx errors before giving up with a clear message."""
+    for attempt in range(3):
+        resp = requests.post(GROQ_URL, json=payload, stream=True, timeout=60,
+                             headers={"Authorization": f"Bearer {api_key}"})
+        if resp.status_code == 200:
+            return resp
+        status, detail = resp.status_code, resp.text[:200]
+        if attempt < 2 and status == 429:
+            m = re.search(r"try again in ([0-9.]+)s", resp.text)
+            try:
+                wait = float(resp.headers.get("retry-after") or
+                             (m.group(1) if m else 3.0))
+            except ValueError:
+                wait = 3.0
+            resp.close()
+            time.sleep(min(wait + 0.4, 9.0))
+            continue
+        if attempt < 2 and status >= 500:
+            resp.close()
+            time.sleep(1.5)
+            continue
+        resp.close()
+        if status == 429:
+            raise RuntimeError("the free Groq tier hit its tokens-per-minute "
+                               "limit and stayed busy after retries — wait "
+                               "~30 seconds and ask again.")
+        raise RuntimeError(f"Groq API {status}: {detail}")
+    raise RuntimeError("Groq API unavailable after retries.")
+
+
 def stream_reply(api_key, context, history):
     messages = (
         [{"role": "system", "content": SYSTEM_PROMPT + "\n\n" + context}]
@@ -171,12 +205,7 @@ def stream_reply(api_key, context, history):
         "max_tokens": 700,
         "stream": True,
     }
-    with requests.post(
-        GROQ_URL, json=payload, stream=True, timeout=60,
-        headers={"Authorization": f"Bearer {api_key}"},
-    ) as resp:
-        if resp.status_code != 200:
-            raise RuntimeError(f"Groq API {resp.status_code}: {resp.text[:200]}")
+    with _post_with_retry(api_key, payload) as resp:
         for raw in resp.iter_lines():
             if not raw:
                 continue
