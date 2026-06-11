@@ -74,6 +74,24 @@ CSS = """
   color: #44403c; padding: 6px 12px;
 }
 .stButton button:hover {border-color: #0f766e; color: #0f766e;}
+/* Map chrome: keep the OSM/CARTO attribution small and inside the canvas */
+.maplibregl-map, .mapboxgl-map {position: relative; overflow: hidden;}
+.maplibregl-ctrl-bottom-right, .mapboxgl-ctrl-bottom-right {
+  position: absolute; bottom: 0; right: 0; z-index: 2;
+}
+.maplibregl-ctrl-bottom-left, .mapboxgl-ctrl-bottom-left {
+  position: absolute; bottom: 0; left: 0; z-index: 2;
+}
+.maplibregl-ctrl-attrib, .mapboxgl-ctrl-attrib {
+  font-size: 10px !important; line-height: 1.3; color: #78716c;
+  background: rgba(255, 255, 255, 0.75); padding: 1px 6px;
+  border-radius: 4px 0 0 0;
+}
+.maplibregl-ctrl-attrib a, .mapboxgl-ctrl-attrib a {
+  color: #78716c !important; text-decoration: none; font-size: 10px !important;
+}
+.map-legend {color: #78716c; font-size: 0.85rem; margin: 2px 0 8px;}
+.map-legend b {color: #44403c;}
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -436,14 +454,24 @@ with tab_day:
     focus = None if pick == options[0] else routes_sorted[options.index(pick) - 1]
     st.plotly_chart(day_map(routes_view, focus))
     if focus is None:
-        st.caption("Lanes are bundled: one arc per corridor, **line width = number "
-                   "of trips**; laden arcs bend one way, empty running the other. "
-                   "⬛ terminals · ⚫ depots · 🟢 customers · 🟠 carrier bases. "
-                   "Pick a truck above to follow its day stop by stop.")
+        st.markdown(
+            """<div class="map-legend">Lanes are bundled — one arc per corridor,
+            <b>line width = number of trips</b>; laden arcs bend one way, empty
+            running the other.&ensp;
+            <span style="color:#1c1917">●</span> terminals&nbsp;·&nbsp;
+            <span style="color:#78716c">●</span> depots&nbsp;·&nbsp;
+            <span style="color:#0f766e">●</span> customers&nbsp;·&nbsp;
+            <span style="color:#e09f3e">●</span> carrier bases&ensp;—&ensp;pick a
+            truck above to follow its day stop by stop.</div>""",
+            unsafe_allow_html=True,
+        )
     else:
-        st.caption("Numbered stops follow the truck through its day; hover a leg "
-                   "for times and kilometres. Grey backdrop = the rest of the "
-                   "network. ⟳ in the picker marks trucks with a street turn.")
+        st.markdown(
+            """<div class="map-legend">Numbered stops follow the truck through its
+            day — hover a leg for times and kilometres. Grey backdrop = the rest of
+            the network; ⟳ in the picker marks trucks with a street turn.</div>""",
+            unsafe_allow_html=True,
+        )
     st.subheader("Truck assignments",
                  help="One row per truck shift in the selected view. ⟳ marks a street "
                       "turn: the import's empty box goes straight to the export "
