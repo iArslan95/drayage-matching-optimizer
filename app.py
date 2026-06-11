@@ -96,24 +96,101 @@ def solve_all(seed, n_orders, n_carriers, import_share, time_limit):
             baseline.fragmented_dispatch(scenario))
 
 
-def day_map(routes):
-    """All truck legs on a minimal map: grey = empty, colour = laden."""
+def _arc(frm, to, bend):
+    """Quadratic-bezier arc between two places; laden and empty legs bend to
+    opposite sides so shared corridors separate instead of overlapping."""
+    lat1, lon1, lat2, lon2 = frm.lat, frm.lon, to.lat, to.lon
+    dx, dy = lon2 - lon1, lat2 - lat1
+    length = (dx * dx + dy * dy) ** 0.5
+    if length == 0:
+        return [lat1, lat2], [lon1, lon2]
+    cx = (lon1 + lon2) / 2 + (-dy / length) * bend * length
+    cy = (lat1 + lat2) / 2 + (dx / length) * bend * length
+    lats, lons = [], []
+    for k in range(15):
+        s = k / 14
+        lons.append((1 - s) ** 2 * lon1 + 2 * (1 - s) * s * cx + s * s * lon2)
+        lats.append((1 - s) ** 2 * lat1 + 2 * (1 - s) * s * cy + s * s * lat2)
+    return lats, lons
+
+
+def _lanes(routes):
+    """Aggregate individual legs into lanes: one line per corridor & kind,
+    with trip count and summed km — the flow-map view."""
+    agg = {}
+    for r in routes:
+        for leg in r["legs"]:
+            key = (leg["frm"].name, leg["to"].name, leg["kind"])
+            if key not in agg:
+                agg[key] = {"frm": leg["frm"], "to": leg["to"],
+                            "kind": leg["kind"], "trips": 0, "km": 0.0}
+            agg[key]["trips"] += 1
+            agg[key]["km"] += leg["km"]
+    return sorted(agg.values(), key=lambda l: 0 if l["kind"] == "empty" else 1)
+
+
+def day_map(routes, focus=None):
+    """Flow map of the day. Aggregated lanes by default (width = trips);
+    with `focus` set, one truck's route is drawn stop by stop and the rest
+    fades to a backdrop."""
     trace_cls = getattr(go, "Scattermap", None) or go.Scattermapbox
     fig = go.Figure()
 
-    for kind in ("empty", "import", "export"):
+    if focus is None:
+        seen = set()
+        for lane in _lanes(routes):
+            kind, style = lane["kind"], LEG_STYLE[lane["kind"]]
+            empty = kind == "empty"
+            lats, lons = _arc(lane["frm"], lane["to"], -0.16 if empty else 0.16)
+            width = min(5.5, (1.1 if empty else 1.7) + 0.9 * (lane["trips"] - 1))
+            label = (f"{lane['frm'].name} → {lane['to'].name} · "
+                     f"{lane['trips']}× {style['name'].lower()} · "
+                     f"{lane['km']:,.0f} km")
+            fig.add_trace(trace_cls(
+                lat=lats, lon=lons, mode="lines", name=style["name"],
+                line=dict(color=style["color"], width=width),
+                opacity=0.45 if empty else 0.85,
+                legendgroup=kind, showlegend=kind not in seen,
+                hoverinfo="text", text=[label] * len(lats),
+            ))
+            seen.add(kind)
+    else:
+        # Faint backdrop of every other lane, then the focused truck on top.
         lats, lons = [], []
-        for r in routes:
-            for leg in r["legs"]:
-                if leg["kind"] != kind:
-                    continue
-                lats += [leg["frm"].lat, leg["to"].lat, None]
-                lons += [leg["frm"].lon, leg["to"].lon, None]
-        style = LEG_STYLE[kind]
+        for lane in _lanes([r for r in routes if r is not focus]):
+            lats += [lane["frm"].lat, lane["to"].lat, None]
+            lons += [lane["frm"].lon, lane["to"].lon, None]
         fig.add_trace(trace_cls(
-            lat=lats, lon=lons, mode="lines", name=style["name"],
-            line=dict(color=style["color"], width=style["width"]),
-            opacity=0.6 if kind == "empty" else 0.85, hoverinfo="skip",
+            lat=lats, lon=lons, mode="lines", name="Other trucks",
+            line=dict(color="#d6d3d1", width=1), opacity=0.5,
+            hoverinfo="skip",
+        ))
+        seen = set()
+        for n, leg in enumerate(focus["legs"], start=1):
+            kind, style = leg["kind"], LEG_STYLE[leg["kind"]]
+            empty = kind == "empty"
+            lats, lons = _arc(leg["frm"], leg["to"], -0.16 if empty else 0.16)
+            label = (f"Leg {n}: {leg['frm'].name} → {leg['to'].name} · "
+                     f"{style['name'].lower()} · {leg['km']:,.0f} km · "
+                     f"{t(leg['dep'])}–{t(leg['arr'])}")
+            fig.add_trace(trace_cls(
+                lat=lats, lon=lons, mode="lines", name=style["name"],
+                line=dict(color=style["color"], width=2.0 if empty else 3.4),
+                opacity=0.7 if empty else 0.95,
+                legendgroup=kind, showlegend=kind not in seen,
+                hoverinfo="text", text=[label] * len(lats),
+            ))
+            seen.add(kind)
+        stops = [focus["legs"][0]["frm"]] + [leg["to"] for leg in focus["legs"]]
+        fig.add_trace(trace_cls(
+            lat=[p.lat for p in stops], lon=[p.lon for p in stops],
+            mode="markers+text",
+            text=[str(k) for k in range(1, len(stops) + 1)],
+            textposition="middle center",
+            textfont=dict(size=9, color="#ffffff"),
+            marker=dict(size=16, color="#1c1917"),
+            hovertext=[f"Stop {k}: {p.name}" for k, p in enumerate(stops, 1)],
+            hoverinfo="text", showlegend=False,
         ))
 
     marker_sets = (
@@ -339,19 +416,39 @@ with tab_day:
         f"Solver: CP-SAT · status **{opt['status']}** · {opt['wall_time_s']:.2f}s wall time · "
         f"{len(scenario.orders)} moves · {k_opt['street_turns']} street turns found"
     )
-    view = st.radio("Map view",
-                    ["Network-optimized plan", "Fragmented dispatch (today's practice)"],
-                    horizontal=True, label_visibility="collapsed")
+    view_col, focus_col = st.columns([1.25, 1])
+    with view_col:
+        view = st.radio("Map view",
+                        ["Network-optimized plan", "Fragmented dispatch (today's practice)"],
+                        horizontal=True, label_visibility="collapsed")
     routes_view = opt["routes"] if view.startswith("Network") else base["routes"]
-    st.plotly_chart(day_map(routes_view))
-    st.caption("⬛ terminals · ⚫ depots · 🟢 customers · 🟠 carrier bases — grey "
-               "lines are empty running, petrol = laden import, amber = laden export. "
-               "Toggle the view above to see the fragmented baseline spaghetti.")
+    routes_sorted = sorted(routes_view, key=lambda r: r["legs"][0]["dep"])
+    with focus_col:
+        options = ["All trucks — network overview"]
+        for n, r in enumerate(routes_sorted, start=1):
+            turns = sum(r["flags"])
+            options.append(f"T{n:02d} · {r['carrier']} · {len(r['orders'])} moves"
+                           + (f" · {turns} ⟳" if turns else ""))
+        pick = st.selectbox("Focus on one truck", options,
+                            label_visibility="collapsed",
+                            help="Follow a single truck's day stop by stop; "
+                                 "all other traffic fades to a backdrop.")
+    focus = None if pick == options[0] else routes_sorted[options.index(pick) - 1]
+    st.plotly_chart(day_map(routes_view, focus))
+    if focus is None:
+        st.caption("Lanes are bundled: one arc per corridor, **line width = number "
+                   "of trips**; laden arcs bend one way, empty running the other. "
+                   "⬛ terminals · ⚫ depots · 🟢 customers · 🟠 carrier bases. "
+                   "Pick a truck above to follow its day stop by stop.")
+    else:
+        st.caption("Numbered stops follow the truck through its day; hover a leg "
+                   "for times and kilometres. Grey backdrop = the rest of the "
+                   "network. ⟳ in the picker marks trucks with a street turn.")
     st.subheader("Truck assignments",
                  help="One row per truck shift in the selected view. ⟳ marks a street "
                       "turn: the import's empty box goes straight to the export "
                       "customer instead of via the depot.")
-    trucks_table(routes_view)
+    trucks_table(routes_sorted)
 
 # ----------------------------------------------------------------------------- compare tab
 with tab_vs:

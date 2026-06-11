@@ -26,6 +26,12 @@ def main():
     at.run()
     assert not at.exception, f"app raised on baseline map view: {at.exception}"
 
+    focus_options = at.selectbox[0].options
+    assert len(focus_options) > 1, "truck focus picker should list trucks"
+    at.selectbox[0].select(focus_options[1])
+    at.run()
+    assert not at.exception, f"app raised on truck focus view: {at.exception}"
+
     print("metrics:", " | ".join(f"{m.label}={m.value}" for m in at.metric))
     print("UI TEST OK")
 
