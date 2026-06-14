@@ -12,10 +12,15 @@ jobs:
       - name: Ping the Streamlit app
         run: |
           url="https://drayage-optimizer.streamlit.app/"
+          ok=0
           for i in 1 2 3; do
-            code=$(curl -s -o /dev/null -w "%{http_code}" -L --max-time 90 "$url")
+            code=$(curl -s -o /dev/null -w "%{http_code}" -L --max-time 90 "$url" || echo "000")
             echo "Attempt $i: HTTP $code"
-            [ "$code" = "200" ] && exit 0
+            if [ "$code" = "200" ]; then ok=1; break; fi
             sleep 30
           done
-          echo "No 200 after 3 attempts (the app may still have been woken)"
+          if [ "$ok" = "1" ]; then
+            echo "App is awake (HTTP 200)."
+          else
+            echo "No HTTP 200 yet, but the request was sent so the wake may still be in progress."
+          fi
