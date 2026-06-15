@@ -2,10 +2,10 @@
 
 A plain HTTP GET returns 200 (the static shell) but does NOT reset Streamlit's
 inactivity timer, which tracks real viewer sessions (the WebSocket the JS opens).
-This script loads the app in headless Chromium; if it finds the app asleep (a
-wake prompt instead of the app), it clicks the wake button, then waits for the
-app to actually render. It stays on the page briefly so the session registers,
-and exits non-zero (with diagnostics) if the app never rendered.
+This loads the app in headless Chromium, searches every frame for the rendered
+app (Community Cloud may embed it in an iframe), wakes it if a button (the sleep
+prompt) is showing, and stays on the page so the session registers. Exits
+non-zero with diagnostics if the app never rendered.
 """
 import os
 import sys
@@ -21,21 +21,26 @@ DEADLINE_S = 180
 APP = '[data-testid="stApp"]'
 
 
-def snapshot(page):
-    labels = []
-    for b in page.query_selector_all("button")[:6]:
+def find_app_frame(page):
+    for fr in page.frames:
         try:
-            tx = (b.inner_text() or "").strip().replace("\n", " ")
-            if tx:
-                labels.append(tx[:40])
+            if fr.query_selector(APP):
+                return fr
         except Exception:
             pass
-    body = ""
-    try:
-        body = (page.inner_text("body") or "").strip().replace("\n", " ")[:200]
-    except Exception:
-        pass
-    return labels, body
+    return None
+
+
+def try_wake(page):
+    for fr in page.frames:
+        try:
+            btn = fr.query_selector("button")
+            if btn:
+                btn.click()
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def main() -> int:
@@ -47,24 +52,20 @@ def main() -> int:
 
         clicked = False
         loaded = False
+        last_frames = None
         start = time.time()
         while time.time() - start < DEADLINE_S:
-            if page.query_selector(APP):
+            if find_app_frame(page):
                 loaded = True
                 break
-            labels, body = snapshot(page)
-            elapsed = int(time.time() - start)
-            print(f"t={elapsed}s no app yet | buttons={labels} | body='{body}'",
-                  flush=True)
-            if not clicked:
-                btn = page.query_selector("button")
-                if btn:
-                    try:
-                        btn.click()
-                        clicked = True
-                        print("  clicked a button (assumed wake control)", flush=True)
-                    except Exception as exc:
-                        print(f"  click failed: {exc}", flush=True)
+            frames = [f.url for f in page.frames]
+            if frames != last_frames:
+                print(f"frames: {frames}", flush=True)
+                last_frames = frames
+            print(f"t={int(time.time() - start)}s no app yet", flush=True)
+            if not clicked and try_wake(page):
+                clicked = True
+                print("  clicked a button (assumed wake control)", flush=True)
             time.sleep(6)
 
         if loaded:
@@ -73,9 +74,12 @@ def main() -> int:
             browser.close()
             return 0
 
-        labels, body = snapshot(page)
-        print(f"FAILED to render within {DEADLINE_S}s | buttons={labels} | "
-              f"body='{body}'", flush=True)
+        print(f"FAILED within {DEADLINE_S}s. frames={[f.url for f in page.frames]}",
+              flush=True)
+        try:
+            print("top html snippet:", page.content()[:800], flush=True)
+        except Exception:
+            pass
         browser.close()
         return 1
 
