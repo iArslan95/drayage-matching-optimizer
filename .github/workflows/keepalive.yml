@@ -2,25 +2,24 @@ name: Keep app awake
 
 on:
   schedule:
-    - cron: '0 */6 * * *'   # every 6 hours (UTC) — well under Streamlit's sleep window
+    - cron: '0 */5 * * *'   # every 5 hours (UTC), with margin under the sleep window
   workflow_dispatch:         # allow manual runs from the Actions tab
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping the Streamlit app
+      - name: Check out the keepalive script
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Playwright Chromium
         run: |
-          url="https://drayage-optimizer.streamlit.app/"
-          ok=0
-          for i in 1 2 3; do
-            code=$(curl -s -o /dev/null -w "%{http_code}" -L --max-time 90 "$url" || echo "000")
-            echo "Attempt $i: HTTP $code"
-            if [ "$code" = "200" ]; then ok=1; break; fi
-            sleep 30
-          done
-          if [ "$ok" = "1" ]; then
-            echo "App is awake (HTTP 200)."
-          else
-            echo "No HTTP 200 yet, but the request was sent so the wake may still be in progress."
-          fi
+          pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Open the app in a real browser session
+        env:
+          APP_URL: https://drayage-optimizer.streamlit.app/
+        run: python .github/keepalive.py
